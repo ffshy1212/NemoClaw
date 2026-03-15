@@ -1,0 +1,30 @@
+{
+  "name": "nemoclaw",
+  "version": "0.1.0",
+  "description": "NemoClaw — run OpenClaw inside OpenShell with NVIDIA inference",
+  "license": "Apache-2.0",
+  "bin": {
+    "nemoclaw": "./bin/nemoclaw.js"
+  },
+  "scripts": {
+    "postinstall": "cd nemoclaw && npm install --ignore-scripts && npm run build 2>/dev/null; echo ''; echo '  NemoClaw installed. Run: nemoclaw setup'; echo ''"
+  },
+  "dependencies": {
+    "openclaw": "2026.3.11"
+  },
+  "files": [
+    "bin/",
+    "nemoclaw/",
+    "nemoclaw-blueprint/",
+    "scripts/",
+    ".jensenclaw/",
+    "Dockerfile"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NVIDIA/openshell-openclaw-plugin.git"
+  }
+}
