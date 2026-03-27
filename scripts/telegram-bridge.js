@@ -16,6 +16,7 @@
  *   ALLOWED_CHAT_IDS    — comma-separated Telegram chat IDs to accept (optional, accepts all if unset)
  */
 
+require("net").setDefaultAutoSelectFamily(true);
 const https = require("https");
 const { execFileSync, spawn } = require("child_process");
 const { resolveOpenshell } = require("../bin/lib/resolve-openshell");
@@ -29,7 +30,8 @@ if (!OPENSHELL) {
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const API_KEY = process.env.NVIDIA_API_KEY;
-const SANDBOX = process.env.SANDBOX_NAME || "nemoclaw";
+const SANDBOX = process.env.SANDBOX_NAME || "my-assistant";
+console.log(`debugHung-Sandbox: ${SANDBOX}`);
 try { validateName(SANDBOX, "SANDBOX_NAME"); } catch (e) { console.error(e.message); process.exit(1); }
 const ALLOWED_CHATS = process.env.ALLOWED_CHAT_IDS
   ? process.env.ALLOWED_CHAT_IDS.split(",").map((s) => s.trim())
@@ -44,6 +46,7 @@ const activeSessions = new Map(); // chatId → message history
 // ── Telegram API helpers ──────────────────────────────────────────
 
 function tgApi(method, body) {
+  console.log(`debugHung-tgApi: ${method} ${JSON.stringify(body)}`);
   return new Promise((resolve, reject) => {
     const data = JSON.stringify(body);
     const req = https.request(
@@ -87,7 +90,7 @@ async function sendMessage(chatId, text, replyTo) {
 }
 
 async function sendTyping(chatId) {
-  await tgApi("sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => {});
+  await tgApi("sendChatAction", { chat_id: chatId, action: "typing" }).catch(() => { });
 }
 
 // ── Run agent inside sandbox ──────────────────────────────────────
@@ -154,6 +157,31 @@ function runAgentInSandbox(message, sessionId) {
   });
 }
 
+// ── Sandbox health check ──────────────────────────────────────────
+
+function isSandboxAlive() {
+  try {
+    execFileSync(OPENSHELL, ["sandbox", "ssh-config", SANDBOX], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+let sandboxFailCount = 0;
+setInterval(() => {
+  if (!isSandboxAlive()) {
+    sandboxFailCount++;
+    console.log(`[bridge] Sandbox "${SANDBOX}" unreachable (${sandboxFailCount}/3).`);
+    if (sandboxFailCount >= 3) {
+      console.log(`[bridge] Sandbox gone after 3 consecutive failures — exiting.`);
+      process.exit(0);
+    }
+  } else {
+    sandboxFailCount = 0;
+  }
+}, 30_000);
+
 // ── Poll loop ─────────────────────────────────────────────────────
 
 async function poll() {
@@ -183,9 +211,9 @@ async function poll() {
           await sendMessage(
             chatId,
             "🦀 *NemoClaw* — powered by Nemotron 3 Super 120B\n\n" +
-              "Send me a message and I'll run it through the OpenClaw agent " +
-              "inside an OpenShell sandbox.\n\n" +
-              "If the agent needs external access, the TUI will prompt for approval.",
+            "Send me a message and I'll run it through the OpenClaw agent " +
+            "inside an OpenShell sandbox.\n\n" +
+            "If the agent needs external access, the TUI will prompt for approval.",
             msg.message_id,
           );
           continue;
