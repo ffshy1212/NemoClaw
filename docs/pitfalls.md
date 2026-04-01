@@ -14,15 +14,29 @@ AggregateError [ETIMEDOUT]
 
 原始碼設定了 `autoSelectFamily: false`，停用了 Happy Eyeballs 演算法。Node.js v18+ 會同時嘗試 IPv4 和 IPv6，IPv6 無路由時不會正確 fallback，導致兩個錯誤被包成 `AggregateError` 一起丟出。
 
+### 嘗試過無效的修法
+
+- `require("net").setDefaultAutoSelectFamily(true)`：只影響 `net.createConnection`，對 `https.request` 無效
+- `autoSelectFamily: true` 加在 `https.request` options：TypeScript 型別定義不包含此欄位，出現 `No overload matches this call`；即使用 `/** @type {any} */` 繞過型別，runtime 上 Node.js 對「DNS 有 IPv6 但網路不通」的環境仍無法正確 fallback
+
 ### 修復
 
-在檔案頂部加入全域設定：
+在 `https.request` options 強制指定 IPv4，並用 `/** @type {any} */` 繞過型別警告：
 
 ```js
-require("net").setDefaultAutoSelectFamily(true);
+const req = https.request(
+  /** @type {any} */ ({
+    hostname: "api.telegram.org",
+    path: `/bot${TOKEN}/${method}`,
+    method: "POST",
+    family: 4, // force IPv4: DNS returns IPv6 but no route exists on this network
+    headers: { ... },
+  }),
 ```
 
-> 注意：`autoSelectFamily` 無法直接加在 `https.request` options 中，TypeScript 型別定義不包含此欄位，會出現 `No overload matches this call`。
+### 補充
+
+此問題為特定網路環境造成（DNS 回傳 IPv6 位址但無路由），多數使用者不會遇到。若未來網路支援 IPv6，可移除 `family: 4`。
 
 ---
 
@@ -140,12 +154,125 @@ bash ~/.nemoclaw/source/scripts/start-services.sh --sandbox my-assistant --stop
 
 ---
 
+## 6. CLI 兩層設計造成職責混淆
+
+### 架構說明
+
+NemoClaw + OpenShell 分為兩層：
+
+| 層 | 工具 | 負責 |
+|----|------|------|
+| 基礎設施層 | `openshell` | sandbox 生命週期、網路、port forward、egress 審批 |
+| 應用層 | `nemoclaw` | AI agent 服務（telegram bridge、cloudflared tunnel）|
+
+### 混淆點
+
+- `openshell sandbox list` vs `openshell forward list` — 兩個 list，語意完全不同
+- `openshell forward stop` — 只停隧道，不停 sandbox，名稱容易誤導
+- `openshell sandbox stop` — 不存在，只有 `delete`
+- `nemoclaw start` / `nemoclaw stop` — 管 agent 服務，但內部偷偷呼叫 `openshell forward start`，讓使用者誤以為一個指令搞定所有事
+
+### 正確的操作心智模型
+
+```text
+啟動：
+  1. openshell sandbox create    → 建沙盒（基礎設施）
+  2. nemoclaw start              → 啟動 agent 服務（應用層）
+
+停止：
+  1. nemoclaw stop               → 停 agent 服務（應用層）
+  2. openshell sandbox delete    → 刪沙盒（基礎設施）
+```
+
+---
+
+## 7. `nemoclaw start` 不接受 sandbox 名稱參數
+
+### 症狀
+
+執行 `nemoclaw start my-assistant` 看起來像是指定了 sandbox，實際上參數被忽略。
+
+### 原因
+
+`start()` 內部是從 registry（本地紀錄）自動抓預設 sandbox，不接受 CLI 參數：
+
+```js
+async function start() {
+  const { defaultSandbox } = registry.listSandboxes(); // 忽略使用者傳入的參數
+  ...
+}
+```
+
+### 影響
+
+- 多個 sandbox 並存時，不知道會啟動哪一個的服務
+- Help 文字完全沒提及 sandbox，誤導使用者以為可以指定
+
+### 建議的 help 文字
+
+```text
+nemoclaw start                   Start auxiliary services for the default registered sandbox
+nemoclaw start <sandbox>         Start auxiliary services for a specific sandbox
+```
+
+---
+
+## 8. `openshell sandbox delete` 不會同步清除 nemoclaw registry
+
+### 症狀
+
+刪除 sandbox 後，`nemoclaw status` 仍顯示已刪除的 sandbox，且舊 sandbox 仍是 default（`*`）：
+
+```text
+Sandboxes:
+    dada
+    my-assistant *
+
+  ● telegram-bridge  (stopped)
+  ● cloudflared  (stopped)
+```
+
+`nemoclaw start` 因此嘗試連接不存在的 sandbox，bridge 無法啟動。
+
+### 原因
+
+`openshell` 和 `nemoclaw` 各自維護獨立的狀態：
+
+- `openshell sandbox delete` → 只刪 openshell 這邊的 sandbox
+- `~/.nemoclaw/sandboxes.json` → nemoclaw 的本地 registry，完全不受影響
+
+### 手動修復
+
+直接編輯 `~/.nemoclaw/sandboxes.json`，移除已刪除的 sandbox 並更新 `defaultSandbox`：
+
+```json
+{
+  "sandboxes": {
+    "dada": { ... }
+  },
+  "defaultSandbox": "dada"
+}
+```
+
+### 正確的刪除流程
+
+```bash
+nemoclaw stop                          # 停 agent 服務
+nemoclaw <name> destroy                # 透過 nemoclaw 刪（會同步清 registry）
+# 不要直接用 openshell sandbox delete
+```
+
+---
+
 ## 總結
 
 | # | 問題 | 根本原因 | 是否修復 |
 |---|------|---------|---------|
-| 1 | 啟動 ETIMEDOUT | `autoSelectFamily: false` | ✅ 已修 |
-| 2 | 無法暫停 sandbox | openshell CLI 設計限制 | ❌ CLI 本身問題 |
+| 1 | 啟動 ETIMEDOUT | `autoSelectFamily: false` + 網路環境無 IPv6 路由 | ✅ 已修（`family: 4`）|
+| 2 | 無法暫停 sandbox | openshell CLI 設計限制，只有 delete | ❌ CLI 本身問題 |
 | 3 | bridge 無法自動停止 | 無 sandbox 暫停狀態可偵測 | ⚠️ 部分修復（delete 可偵測） |
 | 4 | `nemoclaw start` 不重啟 bridge | PID 還活著就跳過 | ⚠️ 需先手動 stop |
 | 5 | `nemoclaw stop` 找不到 bridge | stop 沒傳 sandbox name，PID 路徑錯誤 | ✅ 已修 |
+| 6 | CLI 兩層職責混淆 | nemoclaw / openshell 邊界不清晰 | ❌ 設計問題 |
+| 7 | `nemoclaw start` 忽略 sandbox 參數 | 內部從 registry 抓預設，不接受 CLI 輸入 | ❌ 設計問題 |
+| 8 | `openshell sandbox delete` 不清 registry | 兩個工具各自維護獨立狀態 | ⚠️ 需手動修 `~/.nemoclaw/sandboxes.json` |

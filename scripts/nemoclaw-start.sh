@@ -216,7 +216,7 @@ echo 'Setting up NemoClaw...'
 # separation and run everything as the current user (sandbox).
 # Gateway process isolation is not available in this mode.
 if [ "$(id -u)" -ne 0 ]; then
-  echo "[gateway] Running as non-root (uid=$(id -u)) — privilege separation disabled"
+  # echo "[gateway] Running as non-root (uid=$(id -u)) — privilege separation disabled"
   export HOME=/sandbox
   if ! verify_config_integrity; then
     echo "[SECURITY WARNING] Config integrity check failed — proceeding anyway (non-root mode)"

@@ -58,12 +58,24 @@ network_policies:
         port: 443
         rules:
           - allow: { method: "*", path: "/**" }
+      - host: platform.claude.com
+        port: 443
+        tls: passthrough
+        rules:
+          - allow: { method: "*", path: "/**" }
+      - host: claude.com
+        port: 443
+        tls: passthrough
+        rules:
+          - allow: { method: "*", path: "/**" }
       - host: sentry.io
         port: 443
         rules:
           - allow: { method: "*", path: "/**" }
     binaries:
       - { path: /usr/local/bin/claude }
+      - { path: /sandbox/.local/bin/claude }
+      - { path: /usr/local/bin/node }
 
   nvidia:
     name: nvidia
